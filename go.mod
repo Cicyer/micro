@@ -1,4 +1,4 @@
-module micro
+module github.com/Cicyer/micro
 
 go 1.14
 

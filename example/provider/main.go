@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Cicyer/micro/example/proto/micro-service/TestService"
+	"github.com/Cicyer/micro/micro"
 	"github.com/nacos-group/nacos-sdk-go/common/constant"
 	"google.golang.org/grpc"
-	"micro/example/proto/micro-service/TestService"
-	"test-go/micro"
 	"time"
 )
 

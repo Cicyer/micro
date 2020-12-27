@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/Cicyer/micro"
+	"github.com/Cicyer/micro/example/proto/micro-service/TestService"
+	"github.com/Cicyer/micro/micro"
 	"github.com/nacos-group/nacos-sdk-go/common/constant"
-	"micro/example/proto/micro-service/TestService"
 	"time"
 )
 
