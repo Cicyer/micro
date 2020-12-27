@@ -1,4 +1,4 @@
-module test-go
+module micro
 
 go 1.14
 
