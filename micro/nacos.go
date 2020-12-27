@@ -58,6 +58,7 @@ func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConf
 	}
 	return
 }
+
 func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string) (consumer *NacosConsumer, err error) {
 	consumer = &NacosConsumer{}
 	// Create naming client for service discovery
@@ -78,6 +79,33 @@ func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]c
 		consumer.clusterName = "cluster-default"
 		consumer.groupName = "group-default"
 	}
+	return
+}
+
+//使用provider的参数构建consumer
+func (np *NacosProvider) CreateNacosConsumer() (consumer *NacosConsumer) {
+	consumer = &NacosConsumer{}
+	consumer.clientConfig = np.clientConfig
+	consumer.serverConfigs = np.serverConfigs
+	consumer.namingClient = np.namingClient
+	consumer.serviceName = np.serviceName
+	consumer.needRelink = false
+	consumer.subscribed = false
+	consumer.clusterName = np.clusterName
+	consumer.groupName = np.groupName
+	return
+}
+func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc) (provider *NacosProvider, err error) {
+	provider = &NacosProvider{}
+	provider.registerFunc = foo
+	provider.clientConfig = nc.clientConfig
+	provider.serverConfigs = nc.serverConfigs
+	provider.namingClient = nc.namingClient
+	provider.serviceName = nc.serviceName
+	provider.clusterName = nc.clusterName
+	provider.groupName = nc.groupName
+	provider.ip = "127.0.0.1"
+	provider.metadata = &map[string]string{"idc": "shanghai"}
 	return
 }
 func (np *NacosProvider) GetServiceName() (serviceName string) {
