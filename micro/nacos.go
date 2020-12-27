@@ -82,26 +82,28 @@ func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]c
 	return
 }
 
-//使用provider的参数构建consumer
-func (np *NacosProvider) CreateNacosConsumer() (consumer *NacosConsumer) {
+//使用provider的namingClient构建consumer
+func (np *NacosProvider) CreateNacosConsumer(ServiceName string) (consumer *NacosConsumer) {
 	consumer = &NacosConsumer{}
 	consumer.clientConfig = np.clientConfig
 	consumer.serverConfigs = np.serverConfigs
 	consumer.namingClient = np.namingClient
-	consumer.serviceName = np.serviceName
+	consumer.serviceName = ServiceName
 	consumer.needRelink = false
 	consumer.subscribed = false
 	consumer.clusterName = np.clusterName
 	consumer.groupName = np.groupName
 	return
 }
-func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc) (provider *NacosProvider, err error) {
+
+//使用consumer的namingClient构建provider
+func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string) (provider *NacosProvider, err error) {
 	provider = &NacosProvider{}
 	provider.registerFunc = foo
 	provider.clientConfig = nc.clientConfig
 	provider.serverConfigs = nc.serverConfigs
 	provider.namingClient = nc.namingClient
-	provider.serviceName = nc.serviceName
+	provider.serviceName = ServiceName
 	provider.clusterName = nc.clusterName
 	provider.groupName = nc.groupName
 	provider.ip = "127.0.0.1"
