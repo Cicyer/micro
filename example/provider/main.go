@@ -12,12 +12,13 @@ import (
 )
 
 type OrderServiceImpl struct {
+	TestService.UnimplementedOrderServiceServer
 }
 type OrderService2Impl struct {
+	TestService.UnimplementedOrder2ServiceServer
 }
 
-// 具体的方法实现
-func (this *OrderServiceImpl) GetOrderInfo(ctx context.Context, request *TestService.OrderRequest) (*TestService.OrderInfo, error) {
+func (c *OrderServiceImpl) GetOrderInfo(ctx context.Context, request *TestService.OrderRequest) (*TestService.OrderInfo, error) {
 	orderMap := map[string]TestService.OrderInfo{
 		"201907300001": TestService.OrderInfo{OrderId: "201907300001", OrderName: "衣服", OrderStatus: "已付款"},
 		"201907310001": TestService.OrderInfo{OrderId: "201907310001", OrderName: "零食", OrderStatus: "已付款"},
