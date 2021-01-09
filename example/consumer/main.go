@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"github.com/Cicyer/micro/example/proto/micro-service/TestService"
 	"github.com/Cicyer/micro/micro"
@@ -39,7 +38,7 @@ func main() {
 	//if err != nil {
 	//	panic(err.Error())
 	//}
-	consumer, err := micro.CreateNacosConsumer(&clientConfig, &serverConfigs, "TestService", "cluster-default", "group-default")
+	consumer, err := micro.CreateNacosConsumer(&clientConfig, &serverConfigs, "TestService", "cluster-default", "group-default", 30)
 	micro.AddConsumer(consumer)
 	//
 	//conn, err := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
@@ -51,20 +50,49 @@ func main() {
 	conn, err := micro.GetServiceConn("TestService")
 	orderServiceClient := TestService.NewOrderServiceClient(conn)
 	orderRequest := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
-	orderInfo, err := orderServiceClient.GetOrderInfo(context.Background(), orderRequest)
+	ctx1, cel := consumer.GetNewTimeoutContext()
+	defer cel()
+	orderInfo, err := orderServiceClient.GetOrderInfo(ctx1, orderRequest)
 	if err == nil {
 		fmt.Println(orderInfo.GetOrderId())
 		fmt.Println(orderInfo.GetOrderName())
 		fmt.Println(orderInfo.GetOrderStatus())
+	} else {
+		fmt.Println(err)
 	}
 	//复用测试
 	orderService2Client := TestService.NewOrder2ServiceClient(conn)
 	orderRequest2 := &TestService.OrderRequest2{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
-	orderInfo2, err := orderService2Client.GetOrderInfo(context.Background(), orderRequest2)
+	ctx2, cel2 := consumer.GetNewTimeoutContext()
+	defer cel2()
+	orderInfo2, err := orderService2Client.GetOrderInfo(ctx2, orderRequest2)
 	if err == nil {
 		fmt.Println(orderInfo2.GetOrderId())
 		fmt.Println(orderInfo2.GetOrderName())
 		fmt.Println(orderInfo2.GetOrderStatus())
+	} else {
+		fmt.Println(err)
 	}
 
+	//测试关闭
+	for true {
+		time.Sleep(time.Duration(1) * time.Second)
+		conn, err := micro.GetServiceConn("TestService")
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		fmt.Println(conn.Target())
+		orderService3Client := TestService.NewOrder2ServiceClient(conn)
+		orderRequest3 := &TestService.OrderRequest2{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
+		ctx3, _ := consumer.GetNewTimeoutContext()
+		orderInfo2, err := orderService3Client.GetOrderInfo(ctx3, orderRequest3)
+		if err == nil {
+			fmt.Println(orderInfo2.GetOrderId())
+			fmt.Println(orderInfo2.GetOrderName())
+			fmt.Println(orderInfo2.GetOrderStatus())
+		} else {
+			fmt.Println(err)
+		}
+	}
 }

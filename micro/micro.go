@@ -55,13 +55,13 @@ func StartProvide(provider Provider, port string) (err error) {
 	return
 }
 func Stop() {
-	if consumerMap != nil {
+	if len(*consumerMap) != 0 {
 		fmt.Println("stop micro service consumer....")
 		for k := range *consumerMap {
 			(*consumerMap)[k].Stop()
 		}
 	}
-	if providerMap != nil {
+	if len(*providerMap) != 0 {
 		fmt.Println("stop micro service provider....")
 		for k := range *providerMap {
 			(*providerMap)[k].DeregisterServices()

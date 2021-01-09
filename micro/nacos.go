@@ -1,6 +1,7 @@
 package micro
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/nacos-group/nacos-sdk-go/clients"
@@ -31,17 +32,16 @@ type NacosProvider struct {
 	groupName     string
 }
 type NacosConsumer struct {
-	clientConfig  *constant.ClientConfig
-	serverConfigs *[]constant.ServerConfig
-	namingClient  *naming_client.INamingClient
-	serviceName   string
-	//链接列表，0为主链接，主线路不可用时，业务返回一个备用线路，备用线路会定期关闭回收
-	connList       [10]*ServiceConnection
-	listBtn        int64
-	clusterName    string
-	groupName      string
-	subscribed     bool
-	subscribeCount int64
+	clientConfig         *constant.ClientConfig
+	serverConfigs        *[]constant.ServerConfig
+	namingClient         *naming_client.INamingClient
+	serviceName          string
+	connList             [5]*ServiceConnection
+	clusterName          string
+	groupName            string
+	subscribed           bool
+	subscribeCount       int64
+	requestTimeoutSecond time.Duration
 }
 
 func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string) (provider *NacosProvider, err error) {
@@ -64,7 +64,7 @@ func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConf
 	return
 }
 
-func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, clusterName string, groupName string) (consumer *NacosConsumer, err error) {
+func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, clusterName string, groupName string, timeoutSeconds int) (consumer *NacosConsumer, err error) {
 	consumer = &NacosConsumer{}
 	// Create naming client for service discovery
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
@@ -82,12 +82,14 @@ func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]c
 		consumer.subscribed = false
 		consumer.clusterName = clusterName //"cluster-default"
 		consumer.groupName = groupName     //"group-default"
+		consumer.requestTimeoutSecond = time.Second * time.Duration(timeoutSeconds)
+		consumer.connList = [5]*ServiceConnection{new(ServiceConnection), new(ServiceConnection), new(ServiceConnection), new(ServiceConnection), new(ServiceConnection)}
 	}
 	return
 }
 
 //使用provider的namingClient构建consumer
-func (np *NacosProvider) CreateNacosConsumer(ServiceName string) (consumer *NacosConsumer) {
+func (np *NacosProvider) CreateNacosConsumer(ServiceName string, timeoutSeconds int) (consumer *NacosConsumer) {
 	consumer = &NacosConsumer{}
 	consumer.clientConfig = np.clientConfig
 	consumer.serverConfigs = np.serverConfigs
@@ -96,6 +98,8 @@ func (np *NacosProvider) CreateNacosConsumer(ServiceName string) (consumer *Naco
 	consumer.subscribed = false
 	consumer.clusterName = np.clusterName
 	consumer.groupName = np.groupName
+	consumer.requestTimeoutSecond = time.Second * time.Duration(timeoutSeconds)
+	consumer.connList = [5]*ServiceConnection{new(ServiceConnection), new(ServiceConnection), new(ServiceConnection), new(ServiceConnection), new(ServiceConnection)}
 	return
 }
 
@@ -158,9 +162,15 @@ func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err erro
 	//链接状态异常，申请备用链接，如果备用链接全部不可用，则返回异常
 	//先寻找备用线路是否有可用的
 	for _, v := range nc.connList {
-		if v != nil && (v.instance.GetState().String() != "SHUTDOWN" && v.instance.GetState().String() != "Invalid-State") {
+		if v.instance != nil {
+			fmt.Println(v.instance.GetState())
+		}
+		if v.instance != nil && (v.instance.GetState().String() != "SHUTDOWN" && v.instance.GetState().String() != "Invalid-State" && v.instance.GetState().String() != "TRANSIENT_FAILURE" && v.instance.GetState().String() != "CONNECTING") {
 			conn = v.instance
 			break
+		} else if v.instance != nil && (v.instance.GetState().String() == "SHUTDOWN" || v.instance.GetState().String() == "Invalid-State" || v.instance.GetState().String() == "TRANSIENT_FAILURE") {
+			//释放已经失效的链接
+			go nc.closeAndRemoveConn(v.instance.Target())
 		}
 	}
 	if conn == nil {
@@ -174,43 +184,53 @@ func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err erro
 			err = err1
 			return
 		}
-		co, err1 := nc.addNewConn(instance.Ip)
+		co, err1 := nc.addNewConn(instance.Ip, strconv.FormatUint(instance.Port, 10))
 		if err1 != nil {
 			err = err1
 			return
 		}
 		conn = co.instance
 	}
-	if !nc.subscribed {
-		current := atomic.AddInt64(&nc.subscribeCount, 1)
-		if current == 1 {
-			//订阅，每个服务只会订阅一次
-			err := (*nc.namingClient).Subscribe(&vo.SubscribeParam{
-				ServiceName: nc.serviceName,
-				GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
-				Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
-				SubscribeCallback: func(services []model.SubscribeService, err error) {
-					fmt.Printf("Subscribe callback return services", err)
-					//服务有变化重新检测链接
-					err = nc.refreshServiceConn()
-					fmt.Printf("refresh serviceConn error:", err)
-				},
-			})
-			if err != nil {
-				//订阅状态失败
-
-				return nil, errors.New("Subscribe services fail:" + err.Error())
-			} else {
-				nc.subscribed = true
-			}
-			atomic.AddInt64(&nc.subscribeCount, -1)
-		}
-	}
+	//if !nc.subscribed {
+	//	success := atomic.CompareAndSwapInt64(&nc.subscribeCount, 0, 1)
+	//	if success {
+	//		go func() {
+	//			//订阅，只会订阅一次
+	//			err1 := (*nc.namingClient).Subscribe(&vo.SubscribeParam{
+	//				ServiceName: nc.serviceName,
+	//				GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
+	//				Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
+	//				SubscribeCallback: func(services []model.SubscribeService, err error) {
+	//					//fmt.Println("Subscribe callback return services err", err)
+	//					//fmt.Println("Subscribe callback return services", services)
+	//					//服务有变化重新检测链接
+	//					//for _, v := range services {
+	//					//	_, err1 := nc.addNewConn(v.Ip, strconv.FormatUint(v.Port, 10))
+	//					//	if err1 != nil {
+	//					//		fmt.Println("add serviceConn error:", err1)
+	//					//	}
+	//					//}
+	//				},
+	//			})
+	//			if err1 != nil {
+	//				//订阅状态失败
+	//				nc.subscribeCount = 0
+	//				fmt.Println("Subscribe services fail:" + err1.Error())
+	//			} else {
+	//				nc.subscribed = true
+	//			}
+	//		}()
+	//	}
+	//}
 	return
 }
 
 func (nc *NacosConsumer) GetServiceName() (serviceName string, err error) {
 	serviceName = nc.serviceName
+	return
+}
+func (nc *NacosConsumer) GetNewTimeoutContext() (ctx context.Context, cancel context.CancelFunc) {
+	ctx, cancel = context.WithTimeout(context.TODO(), nc.requestTimeoutSecond)
 	return
 }
 func (nc *NacosConsumer) Stop() (err error) {
@@ -220,175 +240,113 @@ func (nc *NacosConsumer) Stop() (err error) {
 		GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
 		Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
 		SubscribeCallback: func(services []model.SubscribeService, err2 error) {
-			fmt.Printf("Unsubscribe services:", err2.Error())
+			fmt.Println("Unsubscribe services:", err2.Error())
 		},
 	})
+	//释放所有链接
+	for _, v := range nc.connList {
+		if v.instance != nil {
+			//关闭链接的操作优先级最高。直接切断操作
+			conn := v.instance
+			v.instance = nil
+			atomic.AddInt64(&v.processBtn, 1)
+			go func() {
+				//等待一个安全时间后关闭连接
+				if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" && conn.GetState().String() == "TRANSIENT_FAILURE" {
+					//正常状态的链接需要关闭，等待一个服务失效时间
+					time.Sleep(nc.requestTimeoutSecond)
+					err = v.instance.Close()
+				}
+			}()
+		}
+	}
 	return
 }
-func (nc *NacosConsumer) getNewServiceConn() (*grpc.ClientConn, error) {
-	current := atomic.AddInt64(&nc.process, 1)
-	if current == 1 {
-		instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
-			ServiceName: nc.serviceName,
-			GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
-			Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
-		})
-		if err1 != nil {
-			atomic.AddInt64(&nc.process, -1)
-			return nil, errors.New("reset connection fail:" + err1.Error())
-		}
-		conn, err1 := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
-		if err1 != nil {
-			atomic.AddInt64(&nc.process, -1)
-			return nil, errors.New("reset connection fail:" + err1.Error())
-		}
-		if !nc.subscribed {
-			//订阅，每个服务只会订阅一次
-			err := (*nc.namingClient).Subscribe(&vo.SubscribeParam{
-				ServiceName: nc.serviceName,
-				GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
-				Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
-				SubscribeCallback: func(services []model.SubscribeService, err error) {
-					fmt.Printf("Subscribe callback return services", err)
-					//服务有变化重新创建链接
-					err = nc.refreshMainServiceConn()
-					fmt.Printf("refreshMainServiceConn error:", err)
-				},
-			})
-			if err != nil {
-				//订阅状态失败
-				atomic.AddInt64(&nc.process, -1)
-				conn.Close()
-				return nil, errors.New("Subscribe services fail:" + err.Error())
-			}
-			nc.subscribed = true
-		}
-		//完全成功则赋值
-		nc.conn = conn
-	} else {
-		//等待5s看链接是否重新创建
-		time.Sleep(time.Second * 5)
-		if nc.conn != nil {
-			atomic.AddInt64(&nc.process, -1)
-			return nil
-		}
-		//创建失败
-		atomic.AddInt64(&nc.process, -1)
-		return errors.New("micro service temporarily not respond")
-	}
-	atomic.AddInt64(&nc.process, -1)
-	return nil
-}
 
-//创建一个新链接取代当前主链接，并将旧的主链接转入备用线路，等待定时回收
-func (nc *NacosConsumer) refreshServiceConn() error {
-	var tmpConn *grpc.ClientConn
-	current := atomic.AddInt64(&nc.refreshProcess, 1)
-	if current == 1 {
-		//只会有一条刷新处理中
-		instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
-			ServiceName: nc.serviceName,
-			GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
-			Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
-		})
-		if err1 != nil {
-			atomic.AddInt64(&nc.process, -1)
-			return errors.New("reset connection fail:" + err1.Error())
-		}
-		//如果取得的ip在与主线程一致，则先关闭主线程
-		if nc.conn.Target() != instance.Ip {
-			tmpConn = nc.conn
-			//断开主线路
-			nc.conn = nil
-			if tmpConn.GetState().String() != "SHUTDOWN" && tmpConn.GetState().String() != "Invalid-State" {
-				//链接本来就已经失败了，直接关闭重新发起
-				tmpConn.Close()
-			} else {
-				//当前主连接可能正在使用中，先等待一个timeout时间
-				time.Sleep(time.Duration(nc.clientConfig.TimeoutMs) * time.Millisecond)
-				tmpConn.Close()
-			}
-		} else {
-			//从备用链接中检索ip
-			conn := nc.findAndRemoveBackUpConn(instance.Ip)
-			if conn == nil {
-				//如果不存在备用线路,直接加一个备用线路,然后转移
-				conn, err1 = nc.addNewConn(instance.Ip)
-				if err1 != nil {
-					//创建失败
-					return err1
-				}
-
-			} else {
-				//如果存在，直接升为主链
-				if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" {
-					//链接本来就已经失败了，直接关闭重新发起
-					conn.Close()
-				} else {
-					nc.conn = conn
-				}
-			}
-
-		}
-		//重新加入主连接
-
-	}
-	atomic.AddInt64(&nc.refreshProcess, -1)
-
-}
-
-//列表cas删除,必须符合ip地址
-func (nc *NacosConsumer) findAndRemoveBackUpConn(ip string) (conn *ServiceConnection) {
+//列表cas删除
+func (nc *NacosConsumer) findAndRemoveConn(host string, retryTimes int) (conn *ServiceConnection) {
 	for i, v := range nc.connList {
-		if v != nil && ip == v.instance.Target() {
+		if v.instance != nil && host == v.instance.Target() {
 			current := atomic.AddInt64(&v.processBtn, 1)
-			conn = v
 			if current == 1 {
-				//可操作
+				//获得操作权限后才可操作
+				conn = v
 				nc.connList[i] = nil
+			} else if retryTimes > 0 {
+				atomic.AddInt64(&v.processBtn, -1)
+				//不可操作，递归重试，最多递归20次
+				time.Sleep(time.Duration(100) * time.Millisecond)
+				return nc.findAndRemoveConn(host, retryTimes-1)
+			} else {
+				//超出重试次数不成功，直接返回不存在
+				conn = nil
 			}
-			//不可操作重试
 			atomic.AddInt64(&v.processBtn, -1)
-			conn = nc.findAndRemoveBackUpConn(ip)
+			break
+		}
+	}
+	return
+}
+
+//安全关闭并移除某个链接（保证正常业务操作已经完成）
+func (nc *NacosConsumer) closeAndRemoveConn(host string) (err error) {
+	for _, v := range nc.connList {
+		if v.instance != nil && host == v.instance.Target() {
+			//关闭链接的操作优先级最高。直接切断操作
+			conn := v.instance
+			v.instance = nil
+			//等待一个安全时间后关闭连接
+			if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" && conn.GetState().String() == "TRANSIENT_FAILURE" {
+				//正常状态的链接需要关闭，等待一个服务失效时间
+				time.Sleep(nc.requestTimeoutSecond)
+				err = conn.Close()
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+			break
 		}
 	}
 	return
 }
 
 //线程安全创建一个链接到备用池中,如果已经存在则直接返回既存实例
-func (nc *NacosConsumer) addNewConn(ip string) (conn *ServiceConnection, err error) {
+func (nc *NacosConsumer) addNewConn(ip string, port string) (conn *ServiceConnection, err error) {
 	//先寻找是否存在
+	emptyIndex := -1
 	for i, v := range nc.connList {
-		if v != nil && ip == v.instance.Target() {
+		if v.instance != nil && (ip+":"+port) == v.instance.Target() {
 			conn = v
-		} else {
-			//获取map的此操作key
-			current := atomic.AddInt64(&nc.listBtn, 1)
-			if current == 1 {
-				//可操作
-				instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
-					ServiceName: nc.serviceName,
-					GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
-					Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
-				})
+			break
+		} else if v.instance == nil && emptyIndex == -1 && v.processBtn == 0 {
+			//只存第一个空位
+			emptyIndex = i
+			fmt.Println("set " + strconv.Itoa(i))
+		}
+	}
+	//不存在的进行新增
+	if conn == nil {
+		//获取map的此操作key
+		if emptyIndex != -1 {
+			emptyConn := nc.connList[emptyIndex]
+			success := atomic.CompareAndSwapInt64(&emptyConn.processBtn, 0, 1)
+			if success {
+				//线路还有空余，且获取到了操作权
+				grpcConn, err1 := grpc.Dial(ip+":"+port, grpc.WithInsecure())
 				if err1 != nil {
-					atomic.AddInt64(&nc.listBtn, -1)
-					err = errors.New("create connection fail:" + err1.Error())
-				}
-				conn, err1 := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
-				if err1 != nil {
-					atomic.AddInt64(&nc.listBtn, -1)
+					atomic.AddInt64(&emptyConn.processBtn, -1)
 					return nil, errors.New("reset connection fail:" + err1.Error())
 				}
-				nc.connList[i] = &ServiceConnection{
-					instance:   conn,
-					processBtn: 0,
-				}
-				atomic.AddInt64(&nc.listBtn, -1)
+				emptyConn.instance = grpcConn
+				conn = emptyConn
+				atomic.AddInt64(&emptyConn.processBtn, -1)
 			} else {
-				atomic.AddInt64(&nc.listBtn, -1)
-				conn, err = nc.addNewConn(ip)
+				//获取空位失败，重新获取一个空位
+				conn, err = nc.addNewConn(ip, port)
 			}
+		} else {
+			//无空余，不插入
+			err = errors.New("no more connection can be create")
 		}
 	}
 	return
