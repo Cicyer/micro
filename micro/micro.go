@@ -24,7 +24,7 @@ type Provider interface {
 	DeregisterServices() (err error)
 }
 type Consumer interface {
-	GetServiceConnection(serviceName string) (conn *grpc.ClientConn, err error)
+	GetServiceConnection() (conn *grpc.ClientConn, err error)
 	GetServiceName() (serviceName string, err error)
 	Stop() (err error)
 }
@@ -95,7 +95,7 @@ func GetServiceConn(serviceName string) (conn *grpc.ClientConn, err error) {
 		err = errors.New("serviceName not found")
 		return
 	}
-	return consumer.GetServiceConnection(serviceName)
+	return consumer.GetServiceConnection()
 }
 func DeleteConsumer(serviceName string) {
 	delete(*consumerMap, serviceName)

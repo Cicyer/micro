@@ -112,7 +112,7 @@ func main() {
 	//	panic(err.Error())
 	//}
 	//
-	provider, err := micro.CreateNacosProvider(RegisterTestService, &clientConfig, &serverConfigs, "TestService")
+	provider, err := micro.CreateNacosProvider(RegisterTestService, &clientConfig, &serverConfigs, "TestService", "127.0.0.1", "cluster-default", "group-default", &map[string]string{"idc": "shanghai"})
 	if err != nil {
 		panic(err.Error())
 	}

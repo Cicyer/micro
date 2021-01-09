@@ -39,7 +39,7 @@ func main() {
 	//if err != nil {
 	//	panic(err.Error())
 	//}
-	consumer, err := micro.CreateNacosConsumer(&clientConfig, &serverConfigs, "TestService")
+	consumer, err := micro.CreateNacosConsumer(&clientConfig, &serverConfigs, "TestService", "cluster-default", "group-default")
 	micro.AddConsumer(consumer)
 	//
 	//conn, err := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())

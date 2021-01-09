@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+type ServiceConnection struct {
+	instance   *grpc.ClientConn
+	processBtn int64
+}
 type NacosProvider struct {
 	clientConfig  *constant.ClientConfig
 	serverConfigs *[]constant.ServerConfig
@@ -31,15 +35,16 @@ type NacosConsumer struct {
 	serverConfigs *[]constant.ServerConfig
 	namingClient  *naming_client.INamingClient
 	serviceName   string
-	conn          *grpc.ClientConn
-	clusterName   string
-	groupName     string
-	process       int64
-	needRelink    bool
-	subscribed    bool
+	//链接列表，0为主链接，主线路不可用时，业务返回一个备用线路，备用线路会定期关闭回收
+	connList       [10]*ServiceConnection
+	listBtn        int64
+	clusterName    string
+	groupName      string
+	subscribed     bool
+	subscribeCount int64
 }
 
-func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string) (provider *NacosProvider, err error) {
+func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string) (provider *NacosProvider, err error) {
 	provider = &NacosProvider{}
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
 		"serverConfigs": *serverConfigs,
@@ -51,15 +56,15 @@ func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConf
 		provider.serverConfigs = serverConfigs
 		provider.namingClient = &namingClient
 		provider.serviceName = ServiceName
-		provider.clusterName = "cluster-default"
-		provider.groupName = "group-default"
-		provider.ip = "127.0.0.1"
-		provider.metadata = &map[string]string{"idc": "shanghai"}
+		provider.clusterName = clusterName //"cluster-default"
+		provider.groupName = groupName     //"group-default"
+		provider.ip = serviceIp            //"127.0.0.1"
+		provider.metadata = metadata       //&map[string]string{"idc": "shanghai"}
 	}
 	return
 }
 
-func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string) (consumer *NacosConsumer, err error) {
+func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, clusterName string, groupName string) (consumer *NacosConsumer, err error) {
 	consumer = &NacosConsumer{}
 	// Create naming client for service discovery
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
@@ -74,10 +79,9 @@ func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]c
 		consumer.serverConfigs = serverConfigs
 		consumer.namingClient = &namingClient
 		consumer.serviceName = ServiceName
-		consumer.needRelink = false
 		consumer.subscribed = false
-		consumer.clusterName = "cluster-default"
-		consumer.groupName = "group-default"
+		consumer.clusterName = clusterName //"cluster-default"
+		consumer.groupName = groupName     //"group-default"
 	}
 	return
 }
@@ -89,7 +93,6 @@ func (np *NacosProvider) CreateNacosConsumer(ServiceName string) (consumer *Naco
 	consumer.serverConfigs = np.serverConfigs
 	consumer.namingClient = np.namingClient
 	consumer.serviceName = ServiceName
-	consumer.needRelink = false
 	consumer.subscribed = false
 	consumer.clusterName = np.clusterName
 	consumer.groupName = np.groupName
@@ -97,7 +100,7 @@ func (np *NacosProvider) CreateNacosConsumer(ServiceName string) (consumer *Naco
 }
 
 //使用consumer的namingClient构建provider
-func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string) (provider *NacosProvider, err error) {
+func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string) (provider *NacosProvider, err error) {
 	provider = &NacosProvider{}
 	provider.registerFunc = foo
 	provider.clientConfig = nc.clientConfig
@@ -106,8 +109,8 @@ func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName s
 	provider.serviceName = ServiceName
 	provider.clusterName = nc.clusterName
 	provider.groupName = nc.groupName
-	provider.ip = "127.0.0.1"
-	provider.metadata = &map[string]string{"idc": "shanghai"}
+	provider.ip = serviceIp      //"127.0.0.1"
+	provider.metadata = metadata //&map[string]string{"idc": "shanghai"}
 	return
 }
 func (np *NacosProvider) GetServiceName() (serviceName string) {
@@ -151,35 +154,57 @@ func (np *NacosProvider) DeregisterServices() (err error) {
 	return
 }
 
-func (nc *NacosConsumer) GetServiceConnection(serviceName string) (conn *grpc.ClientConn, err error) {
-	var tmpConn *grpc.ClientConn
-	if nc.conn != nil && (nc.conn.GetState().String() != "SHUTDOWN" && nc.conn.GetState().String() != "Invalid-State") {
-		//可用的链接，直接返回
-		conn = nc.conn
-	} else if nc.conn != nil {
-		//链接存在问题。此时断开连接，重新刷新
-		err1 := nc.conn.Close()
+func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err error) {
+	//链接状态异常，申请备用链接，如果备用链接全部不可用，则返回异常
+	//先寻找备用线路是否有可用的
+	for _, v := range nc.connList {
+		if v != nil && (v.instance.GetState().String() != "SHUTDOWN" && v.instance.GetState().String() != "Invalid-State") {
+			conn = v.instance
+			break
+		}
+	}
+	if conn == nil {
+		//没有找到可用链接，直接创建新的
+		instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
+			ServiceName: nc.serviceName,
+			GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
+			Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
+		})
 		if err1 != nil {
-			err = errors.New("reset connection fail:" + err1.Error())
+			err = err1
 			return
 		}
-		//删除原有conn
-		nc.conn = nil
-	} else if nc.needRelink {
-		nc.needRelink = false
-		//如果监听器告知需要重新，则取出当前的conn，防止后续请求继续使用此link
-		tmpConn = nc.conn
-		nc.conn = nil
+		co, err1 := nc.addNewConn(instance.Ip)
+		if err1 != nil {
+			err = err1
+			return
+		}
+		conn = co.instance
 	}
+	if !nc.subscribed {
+		current := atomic.AddInt64(&nc.subscribeCount, 1)
+		if current == 1 {
+			//订阅，每个服务只会订阅一次
+			err := (*nc.namingClient).Subscribe(&vo.SubscribeParam{
+				ServiceName: nc.serviceName,
+				GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
+				Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
+				SubscribeCallback: func(services []model.SubscribeService, err error) {
+					fmt.Printf("Subscribe callback return services", err)
+					//服务有变化重新检测链接
+					err = nc.refreshServiceConn()
+					fmt.Printf("refresh serviceConn error:", err)
+				},
+			})
+			if err != nil {
+				//订阅状态失败
 
-	//此时说明要重新获取链接
-	if nc.conn == nil {
-		err = nc.getServiceConn()
-		conn = nc.conn
-	}
-	if tmpConn != nil {
-		//如果有重试
-		tmpConn.Close()
+				return nil, errors.New("Subscribe services fail:" + err.Error())
+			} else {
+				nc.subscribed = true
+			}
+			atomic.AddInt64(&nc.subscribeCount, -1)
+		}
 	}
 	return
 }
@@ -200,7 +225,7 @@ func (nc *NacosConsumer) Stop() (err error) {
 	})
 	return
 }
-func (nc *NacosConsumer) getServiceConn() error {
+func (nc *NacosConsumer) getNewServiceConn() (*grpc.ClientConn, error) {
 	current := atomic.AddInt64(&nc.process, 1)
 	if current == 1 {
 		instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
@@ -210,12 +235,12 @@ func (nc *NacosConsumer) getServiceConn() error {
 		})
 		if err1 != nil {
 			atomic.AddInt64(&nc.process, -1)
-			return errors.New("reset connection fail:" + err1.Error())
+			return nil, errors.New("reset connection fail:" + err1.Error())
 		}
 		conn, err1 := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
 		if err1 != nil {
 			atomic.AddInt64(&nc.process, -1)
-			return errors.New("reset connection fail:" + err1.Error())
+			return nil, errors.New("reset connection fail:" + err1.Error())
 		}
 		if !nc.subscribed {
 			//订阅，每个服务只会订阅一次
@@ -226,14 +251,15 @@ func (nc *NacosConsumer) getServiceConn() error {
 				SubscribeCallback: func(services []model.SubscribeService, err error) {
 					fmt.Printf("Subscribe callback return services", err)
 					//服务有变化重新创建链接
-					nc.needRelink = true
+					err = nc.refreshMainServiceConn()
+					fmt.Printf("refreshMainServiceConn error:", err)
 				},
 			})
 			if err != nil {
 				//订阅状态失败
 				atomic.AddInt64(&nc.process, -1)
 				conn.Close()
-				return errors.New("Subscribe services fail:" + err.Error())
+				return nil, errors.New("Subscribe services fail:" + err.Error())
 			}
 			nc.subscribed = true
 		}
@@ -252,4 +278,118 @@ func (nc *NacosConsumer) getServiceConn() error {
 	}
 	atomic.AddInt64(&nc.process, -1)
 	return nil
+}
+
+//创建一个新链接取代当前主链接，并将旧的主链接转入备用线路，等待定时回收
+func (nc *NacosConsumer) refreshServiceConn() error {
+	var tmpConn *grpc.ClientConn
+	current := atomic.AddInt64(&nc.refreshProcess, 1)
+	if current == 1 {
+		//只会有一条刷新处理中
+		instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
+			ServiceName: nc.serviceName,
+			GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
+			Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
+		})
+		if err1 != nil {
+			atomic.AddInt64(&nc.process, -1)
+			return errors.New("reset connection fail:" + err1.Error())
+		}
+		//如果取得的ip在与主线程一致，则先关闭主线程
+		if nc.conn.Target() != instance.Ip {
+			tmpConn = nc.conn
+			//断开主线路
+			nc.conn = nil
+			if tmpConn.GetState().String() != "SHUTDOWN" && tmpConn.GetState().String() != "Invalid-State" {
+				//链接本来就已经失败了，直接关闭重新发起
+				tmpConn.Close()
+			} else {
+				//当前主连接可能正在使用中，先等待一个timeout时间
+				time.Sleep(time.Duration(nc.clientConfig.TimeoutMs) * time.Millisecond)
+				tmpConn.Close()
+			}
+		} else {
+			//从备用链接中检索ip
+			conn := nc.findAndRemoveBackUpConn(instance.Ip)
+			if conn == nil {
+				//如果不存在备用线路,直接加一个备用线路,然后转移
+				conn, err1 = nc.addNewConn(instance.Ip)
+				if err1 != nil {
+					//创建失败
+					return err1
+				}
+
+			} else {
+				//如果存在，直接升为主链
+				if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" {
+					//链接本来就已经失败了，直接关闭重新发起
+					conn.Close()
+				} else {
+					nc.conn = conn
+				}
+			}
+
+		}
+		//重新加入主连接
+
+	}
+	atomic.AddInt64(&nc.refreshProcess, -1)
+
+}
+
+//列表cas删除,必须符合ip地址
+func (nc *NacosConsumer) findAndRemoveBackUpConn(ip string) (conn *ServiceConnection) {
+	for i, v := range nc.connList {
+		if v != nil && ip == v.instance.Target() {
+			current := atomic.AddInt64(&v.processBtn, 1)
+			conn = v
+			if current == 1 {
+				//可操作
+				nc.connList[i] = nil
+			}
+			//不可操作重试
+			atomic.AddInt64(&v.processBtn, -1)
+			conn = nc.findAndRemoveBackUpConn(ip)
+		}
+	}
+	return
+}
+
+//线程安全创建一个链接到备用池中,如果已经存在则直接返回既存实例
+func (nc *NacosConsumer) addNewConn(ip string) (conn *ServiceConnection, err error) {
+	//先寻找是否存在
+	for i, v := range nc.connList {
+		if v != nil && ip == v.instance.Target() {
+			conn = v
+		} else {
+			//获取map的此操作key
+			current := atomic.AddInt64(&nc.listBtn, 1)
+			if current == 1 {
+				//可操作
+				instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
+					ServiceName: nc.serviceName,
+					GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
+					Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
+				})
+				if err1 != nil {
+					atomic.AddInt64(&nc.listBtn, -1)
+					err = errors.New("create connection fail:" + err1.Error())
+				}
+				conn, err1 := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
+				if err1 != nil {
+					atomic.AddInt64(&nc.listBtn, -1)
+					return nil, errors.New("reset connection fail:" + err1.Error())
+				}
+				nc.connList[i] = &ServiceConnection{
+					instance:   conn,
+					processBtn: 0,
+				}
+				atomic.AddInt64(&nc.listBtn, -1)
+			} else {
+				atomic.AddInt64(&nc.listBtn, -1)
+				conn, err = nc.addNewConn(ip)
+			}
+		}
+	}
+	return
 }
