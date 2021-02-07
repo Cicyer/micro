@@ -15,10 +15,28 @@ import (
 	"time"
 )
 
+var (
+	//不同服务使用一个ip:port提供服务，复用链接
+	connPool = map[string]*grpc.ClientConn{}
+)
+
 type ServiceConnection struct {
-	instance   *grpc.ClientConn
+	address    string
 	processBtn int64
 }
+
+func (s *ServiceConnection) GetConn() *grpc.ClientConn {
+	return connPool[s.address]
+}
+func (s *ServiceConnection) SetConn(conn *grpc.ClientConn) {
+	if conn == nil {
+		s.address = ""
+	} else {
+		s.address = conn.Target()
+	}
+	connPool[s.address] = conn
+}
+
 type NacosProvider struct {
 	clientConfig  *constant.ClientConfig
 	serverConfigs *[]constant.ServerConfig
@@ -162,15 +180,15 @@ func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err erro
 	//链接状态异常，申请备用链接，如果备用链接全部不可用，则返回异常
 	//先寻找备用线路是否有可用的
 	for _, v := range nc.connList {
-		if v.instance != nil {
-			fmt.Println(v.instance.GetState())
+		if v.GetConn() != nil {
+			fmt.Println(v.GetConn().GetState())
 		}
-		if v.instance != nil && (v.instance.GetState().String() != "SHUTDOWN" && v.instance.GetState().String() != "Invalid-State" && v.instance.GetState().String() != "TRANSIENT_FAILURE" && v.instance.GetState().String() != "CONNECTING") {
-			conn = v.instance
+		if v.GetConn() != nil && (v.GetConn().GetState().String() != "SHUTDOWN" && v.GetConn().GetState().String() != "Invalid-State" && v.GetConn().GetState().String() != "TRANSIENT_FAILURE" && v.GetConn().GetState().String() != "CONNECTING") {
+			conn = v.GetConn()
 			break
-		} else if v.instance != nil && (v.instance.GetState().String() == "SHUTDOWN" || v.instance.GetState().String() == "Invalid-State" || v.instance.GetState().String() == "TRANSIENT_FAILURE") {
+		} else if v.GetConn() != nil && (v.GetConn().GetState().String() == "SHUTDOWN" || v.GetConn().GetState().String() == "Invalid-State" || v.GetConn().GetState().String() == "TRANSIENT_FAILURE") {
 			//释放已经失效的链接
-			go nc.closeAndRemoveConn(v.instance.Target())
+			go nc.closeAndRemoveConn(v.GetConn().Target())
 		}
 	}
 	if conn == nil {
@@ -189,7 +207,7 @@ func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err erro
 			err = err1
 			return
 		}
-		conn = co.instance
+		conn = co.GetConn()
 	}
 	//if !nc.subscribed {
 	//	success := atomic.CompareAndSwapInt64(&nc.subscribeCount, 0, 1)
@@ -245,17 +263,17 @@ func (nc *NacosConsumer) Stop() (err error) {
 	})
 	//释放所有链接
 	for _, v := range nc.connList {
-		if v.instance != nil {
+		if v.GetConn() != nil {
 			//关闭链接的操作优先级最高。直接切断操作
-			conn := v.instance
-			v.instance = nil
+			conn := v.GetConn()
+			v.SetConn(nil)
 			atomic.AddInt64(&v.processBtn, 1)
 			go func() {
 				//等待一个安全时间后关闭连接
 				if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" && conn.GetState().String() == "TRANSIENT_FAILURE" {
 					//正常状态的链接需要关闭，等待一个服务失效时间
 					time.Sleep(nc.requestTimeoutSecond)
-					err = v.instance.Close()
+					err = v.GetConn().Close()
 				}
 			}()
 		}
@@ -266,7 +284,7 @@ func (nc *NacosConsumer) Stop() (err error) {
 //列表cas删除
 func (nc *NacosConsumer) findAndRemoveConn(host string, retryTimes int) (conn *ServiceConnection) {
 	for i, v := range nc.connList {
-		if v.instance != nil && host == v.instance.Target() {
+		if v.GetConn() != nil && host == v.GetConn().Target() {
 			current := atomic.AddInt64(&v.processBtn, 1)
 			if current == 1 {
 				//获得操作权限后才可操作
@@ -291,10 +309,10 @@ func (nc *NacosConsumer) findAndRemoveConn(host string, retryTimes int) (conn *S
 //安全关闭并移除某个链接（保证正常业务操作已经完成）
 func (nc *NacosConsumer) closeAndRemoveConn(host string) (err error) {
 	for _, v := range nc.connList {
-		if v.instance != nil && host == v.instance.Target() {
+		if v.GetConn() != nil && host == v.GetConn().Target() {
 			//关闭链接的操作优先级最高。直接切断操作
-			conn := v.instance
-			v.instance = nil
+			conn := v.GetConn()
+			v.SetConn(nil)
 			//等待一个安全时间后关闭连接
 			if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" && conn.GetState().String() == "TRANSIENT_FAILURE" {
 				//正常状态的链接需要关闭，等待一个服务失效时间
@@ -315,10 +333,10 @@ func (nc *NacosConsumer) addNewConn(ip string, port string) (conn *ServiceConnec
 	//先寻找是否存在
 	emptyIndex := -1
 	for i, v := range nc.connList {
-		if v.instance != nil && (ip+":"+port) == v.instance.Target() {
+		if v.GetConn() != nil && (ip+":"+port) == v.GetConn().Target() {
 			conn = v
 			break
-		} else if v.instance == nil && emptyIndex == -1 && v.processBtn == 0 {
+		} else if v.GetConn() == nil && emptyIndex == -1 && v.processBtn == 0 {
 			//只存第一个空位
 			emptyIndex = i
 			fmt.Println("set " + strconv.Itoa(i))
@@ -337,7 +355,7 @@ func (nc *NacosConsumer) addNewConn(ip string, port string) (conn *ServiceConnec
 					atomic.AddInt64(&emptyConn.processBtn, -1)
 					return nil, errors.New("reset connection fail:" + err1.Error())
 				}
-				emptyConn.instance = grpcConn
+				emptyConn.SetConn(grpcConn)
 				conn = emptyConn
 				atomic.AddInt64(&emptyConn.processBtn, -1)
 			} else {
