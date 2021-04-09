@@ -9,6 +9,7 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/common/constant"
 	"github.com/nacos-group/nacos-sdk-go/model"
 	"github.com/nacos-group/nacos-sdk-go/vo"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"strconv"
 	"sync/atomic"
@@ -42,6 +43,7 @@ type NacosProvider struct {
 	serverConfigs *[]constant.ServerConfig
 	namingClient  *naming_client.INamingClient
 	registerFunc  GrpcRegisterFunc
+	logger        *zap.Logger
 	serviceName   string
 	port          uint64
 	ip            string
@@ -135,6 +137,19 @@ func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName s
 	provider.metadata = metadata //&map[string]string{"idc": "shanghai"}
 	return
 }
+
+func (np *NacosProvider) SetLogger(logger *zap.Logger) (err error) {
+	if logger == nil {
+		return errors.New("nil logger")
+	}
+	np.logger = logger
+	return
+}
+
+func (np *NacosProvider) GetLogger() (logger *zap.Logger) {
+	return np.logger
+}
+
 func (np *NacosProvider) GetServiceName() (serviceName string) {
 	return np.serviceName
 }

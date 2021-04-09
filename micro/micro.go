@@ -3,7 +3,12 @@ package micro
 import (
 	"errors"
 	"fmt"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
+	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"net"
 	"sync/atomic"
 	"time"
@@ -22,6 +27,8 @@ type Provider interface {
 	RegisterServices(s *grpc.Server, port string) (err error)
 	GetServiceName() (serviceName string)
 	DeregisterServices() (err error)
+	SetLogger(*zap.Logger) (err error)
+	GetLogger() (logger *zap.Logger)
 }
 type Consumer interface {
 	GetServiceConnection() (conn *grpc.ClientConn, err error)
@@ -37,7 +44,26 @@ func StartProvide(provider Provider, port string) (err error) {
 			return
 		}
 	}
-	server := grpc.NewServer()
+	var server *grpc.Server
+	if provider.GetLogger() != nil {
+		server = grpc.NewServer(
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				MaxConnectionIdle: 5 * time.Minute,
+			}),
+			grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+				grpc_zap.StreamServerInterceptor(provider.GetLogger()),
+				grpc_recovery.StreamServerInterceptor(),
+			)),
+			grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+				grpc_zap.UnaryServerInterceptor(provider.GetLogger()),
+				grpc_recovery.UnaryServerInterceptor(),
+			)),
+		)
+	} else {
+		server = grpc.NewServer(grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 5 * time.Minute,
+		}))
+	}
 	//将该端口注册到注册中心，包含的服务由provider自行确定
 	err = (provider).RegisterServices(server, port)
 	if err != nil {
@@ -51,7 +77,55 @@ func StartProvide(provider Provider, port string) (err error) {
 			fmt.Println("Deregister Services fail:", err.Error())
 		}
 	}()
-	server.Serve(listener)
+	return
+}
+func recoveryInterceptor(err error) grpc_recovery.Option {
+	return grpc_recovery.WithRecoveryHandler(func(p interface{}) (err error) {
+		return err
+	})
+}
+
+//指定grpc panic的服务启动方式
+func StartProvideWithPanicCode(provider Provider, port string, panicErr error) (err error) {
+	if listener == nil {
+		err = createListener(port)
+		if err != nil {
+			return
+		}
+	}
+	var server *grpc.Server
+	if provider.GetLogger() != nil {
+		server = grpc.NewServer(
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				MaxConnectionIdle: 5 * time.Minute,
+			}),
+			grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+				grpc_zap.StreamServerInterceptor(provider.GetLogger()),
+				grpc_recovery.StreamServerInterceptor(recoveryInterceptor(panicErr)),
+			)),
+			grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+				grpc_zap.UnaryServerInterceptor(provider.GetLogger()),
+				grpc_recovery.UnaryServerInterceptor(recoveryInterceptor(panicErr)),
+			)),
+		)
+	} else {
+		server = grpc.NewServer(grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 5 * time.Minute,
+		}))
+	}
+	//将该端口注册到注册中心，包含的服务由provider自行确定
+	err = (provider).RegisterServices(server, port)
+	if err != nil {
+		return
+	}
+	(*providerMap)[provider.GetServiceName()] = provider
+	defer func() {
+		fmt.Println("stop micro service provider....")
+		err := (provider).DeregisterServices()
+		if err != nil {
+			fmt.Println("Deregister Services fail:", err.Error())
+		}
+	}()
 	return
 }
 func Stop() {
