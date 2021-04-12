@@ -44,6 +44,7 @@ type NacosProvider struct {
 	namingClient  *naming_client.INamingClient
 	registerFunc  GrpcRegisterFunc
 	logger        *zap.Logger
+	circuitConfig *CircuitConfig
 	serviceName   string
 	port          uint64
 	ip            string
@@ -136,6 +137,10 @@ func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName s
 	provider.ip = serviceIp      //"127.0.0.1"
 	provider.metadata = metadata //&map[string]string{"idc": "shanghai"}
 	return
+}
+
+func (np *NacosProvider) GetCircuitConfig() (config *CircuitConfig) {
+	return np.circuitConfig
 }
 
 func (np *NacosProvider) SetLogger(logger *zap.Logger) (err error) {

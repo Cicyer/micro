@@ -6,6 +6,7 @@ import (
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_zap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -22,6 +23,18 @@ var (
 	providerMap    = &map[string]Provider{}
 )
 
+//失败计数器
+func CircuitBreakerIncr(expire time.Duration) grpc_recovery.Option {
+	return grpc_recovery.WithRecoveryHandler(func(p interface{}) (err error) {
+		//TODO redis中单位时间内超时的次数超过指定数量
+		return nil
+	})
+}
+
+type CircuitConfig struct {
+	//TODO 熔断配置，单位时间内错误率高于某比率时自动熔断，并在指定时间后重试
+}
+
 type GrpcRegisterFunc func(s *grpc.Server)
 type Provider interface {
 	RegisterServices(s *grpc.Server, port string) (err error)
@@ -29,6 +42,7 @@ type Provider interface {
 	DeregisterServices() (err error)
 	SetLogger(*zap.Logger) (err error)
 	GetLogger() (logger *zap.Logger)
+	GetCircuitConfig() (config *CircuitConfig)
 }
 type Consumer interface {
 	GetServiceConnection() (conn *grpc.ClientConn, err error)
@@ -50,19 +64,29 @@ func StartProvide(provider Provider, port string) (err error) {
 			grpc.KeepaliveParams(keepalive.ServerParameters{
 				MaxConnectionIdle: 5 * time.Minute,
 			}),
-			grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
-				grpc_zap.StreamServerInterceptor(provider.GetLogger()),
-				grpc_recovery.StreamServerInterceptor(),
-			)),
 			grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+				grpc_opentracing.UnaryServerInterceptor(),
 				grpc_zap.UnaryServerInterceptor(provider.GetLogger()),
-				grpc_recovery.UnaryServerInterceptor(),
+				grpc_recovery.UnaryServerInterceptor(CircuitBreakerIncr()),
+			)),
+			grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+				grpc_opentracing.StreamServerInterceptor(),
+				grpc_zap.StreamServerInterceptor(provider.GetLogger()),
+				grpc_recovery.StreamServerInterceptor(CircuitBreakerIncr()),
 			)),
 		)
 	} else {
-		server = grpc.NewServer(grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle: 5 * time.Minute,
-		}))
+		server = grpc.NewServer(
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				MaxConnectionIdle: 5 * time.Minute,
+			}),
+			grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+				grpc_recovery.UnaryServerInterceptor(),
+			)),
+			grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+				grpc_recovery.StreamServerInterceptor(),
+			)),
+		)
 	}
 	//将该端口注册到注册中心，包含的服务由provider自行确定
 	err = (provider).RegisterServices(server, port)
@@ -77,6 +101,10 @@ func StartProvide(provider Provider, port string) (err error) {
 			fmt.Println("Deregister Services fail:", err.Error())
 		}
 	}()
+	err = server.Serve(listener)
+	if err != nil {
+		return
+	}
 	return
 }
 func recoveryInterceptor(err error) grpc_recovery.Option {
@@ -126,6 +154,10 @@ func StartProvideWithPanicCode(provider Provider, port string, panicErr error) (
 			fmt.Println("Deregister Services fail:", err.Error())
 		}
 	}()
+	err = server.Serve(listener)
+	if err != nil {
+		return
+	}
 	return
 }
 func Stop() {
