@@ -9,7 +9,6 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/common/constant"
 	"github.com/nacos-group/nacos-sdk-go/model"
 	"github.com/nacos-group/nacos-sdk-go/vo"
-	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"strconv"
 	"sync/atomic"
@@ -43,8 +42,6 @@ type NacosProvider struct {
 	serverConfigs *[]constant.ServerConfig
 	namingClient  *naming_client.INamingClient
 	registerFunc  GrpcRegisterFunc
-	logger        *zap.Logger
-	circuitConfig *CircuitConfig
 	serviceName   string
 	port          uint64
 	ip            string
@@ -65,8 +62,8 @@ type NacosConsumer struct {
 	requestTimeoutSecond time.Duration
 }
 
-func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string) (provider *NacosProvider, err error) {
-	provider = &NacosProvider{}
+func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string) (*Provider, error) {
+	provider := &NacosProvider{}
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
 		"serverConfigs": *serverConfigs,
 		"clientConfig":  *clientConfig,
@@ -82,7 +79,7 @@ func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConf
 		provider.ip = serviceIp            //"127.0.0.1"
 		provider.metadata = metadata       //&map[string]string{"idc": "shanghai"}
 	}
-	return
+	return CreateProvider(provider, nil, nil), nil
 }
 
 func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, clusterName string, groupName string, timeoutSeconds int) (consumer *NacosConsumer, err error) {
@@ -125,8 +122,8 @@ func (np *NacosProvider) CreateNacosConsumer(ServiceName string, timeoutSeconds 
 }
 
 //使用consumer的namingClient构建provider
-func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string) (provider *NacosProvider, err error) {
-	provider = &NacosProvider{}
+func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string) (*Provider, error) {
+	provider := &NacosProvider{}
 	provider.registerFunc = foo
 	provider.clientConfig = nc.clientConfig
 	provider.serverConfigs = nc.serverConfigs
@@ -136,23 +133,7 @@ func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName s
 	provider.groupName = nc.groupName
 	provider.ip = serviceIp      //"127.0.0.1"
 	provider.metadata = metadata //&map[string]string{"idc": "shanghai"}
-	return
-}
-
-func (np *NacosProvider) GetCircuitConfig() (config *CircuitConfig) {
-	return np.circuitConfig
-}
-
-func (np *NacosProvider) SetLogger(logger *zap.Logger) (err error) {
-	if logger == nil {
-		return errors.New("nil logger")
-	}
-	np.logger = logger
-	return
-}
-
-func (np *NacosProvider) GetLogger() (logger *zap.Logger) {
-	return np.logger
+	return CreateProvider(provider, nil, nil), nil
 }
 
 func (np *NacosProvider) GetServiceName() (serviceName string) {
