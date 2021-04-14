@@ -124,7 +124,7 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-	err = micro.StartProvide(provider, "8092")
+	err = micro.StartProvide(provider.GetBaseProvider(), "8092")
 	if err != nil {
 		panic(err.Error())
 	}

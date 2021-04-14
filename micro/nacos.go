@@ -43,7 +43,7 @@ func (s *ServiceConnection) SetConn(conn *grpc.ClientConn) {
 }
 
 type NacosProvider struct {
-	base          *Provider
+	provider      *Provider
 	clientConfig  *constant.ClientConfig
 	serverConfigs *[]constant.ServerConfig
 	namingClient  *naming_client.INamingClient
@@ -56,7 +56,7 @@ type NacosProvider struct {
 	groupName     string
 }
 type NacosConsumer struct {
-	base           *Consumer
+	consumer       *Consumer
 	clientConfig   *constant.ClientConfig
 	serverConfigs  *[]constant.ServerConfig
 	namingClient   *naming_client.INamingClient
@@ -68,7 +68,7 @@ type NacosConsumer struct {
 	subscribeCount int64
 }
 
-func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string) (*Provider, error) {
+func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string) (*NacosProvider, error) {
 	provider := &NacosProvider{}
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
 		"serverConfigs": *serverConfigs,
@@ -86,10 +86,10 @@ func CreateNacosProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConf
 		provider.metadata = metadata       //&map[string]string{"idc": "shanghai"}
 	}
 	p, err := CreateProvider(provider, defaultCircuitConfig, nil)
-	provider.base = p
-	return p, err
+	provider.provider = p
+	return provider, err
 }
-func CreateNacosCircuitProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string, circuitConfig CircuitConfig) (*Provider, error) {
+func CreateNacosCircuitProvider(foo GrpcRegisterFunc, clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, serviceIp string, clusterName string, groupName string, metadata *map[string]string, circuitConfig CircuitConfig) (*NacosProvider, error) {
 	provider := &NacosProvider{}
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
 		"serverConfigs": *serverConfigs,
@@ -107,11 +107,11 @@ func CreateNacosCircuitProvider(foo GrpcRegisterFunc, clientConfig *constant.Cli
 		provider.metadata = metadata       //&map[string]string{"idc": "shanghai"}
 	}
 	p, err := CreateProvider(provider, circuitConfig, nil)
-	provider.base = p
-	return p, err
+	provider.provider = p
+	return provider, err
 }
 
-func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, clusterName string, groupName string, timeoutSeconds int) (*Consumer, error) {
+func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]constant.ServerConfig, ServiceName string, clusterName string, groupName string, timeoutSeconds int) (*NacosConsumer, error) {
 	consumer := &NacosConsumer{}
 	// Create naming client for service discovery
 	namingClient, err := clients.CreateNamingClient(map[string]interface{}{
@@ -136,12 +136,12 @@ func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]c
 		return nil, err
 	}
 	c.requestTimeoutSecond = time.Second * time.Duration(timeoutSeconds)
-	consumer.base = c
-	return c, err
+	consumer.consumer = c
+	return consumer, err
 }
 
 //使用provider的namingClient构建consumer
-func CreateNacosConsumerWithProvider(ServiceName string, timeoutSeconds int, np *NacosProvider) *Consumer {
+func (np *NacosProvider) CreateNacosConsumer(ServiceName string, timeoutSeconds int) *NacosConsumer {
 	consumer := &NacosConsumer{}
 	consumer.clientConfig = np.clientConfig
 	consumer.serverConfigs = np.serverConfigs
@@ -153,12 +153,12 @@ func CreateNacosConsumerWithProvider(ServiceName string, timeoutSeconds int, np 
 	consumer.connList = [5]*ServiceConnection{new(ServiceConnection), new(ServiceConnection), new(ServiceConnection), new(ServiceConnection), new(ServiceConnection)}
 	c, _ := CreateConsumer(consumer)
 	c.requestTimeoutSecond = time.Second * time.Duration(timeoutSeconds)
-	consumer.base = c
-	return c
+	consumer.consumer = c
+	return consumer
 }
 
 //使用consumer的namingClient构建provider
-func CreateNacosProviderWithConsumer(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string, nc *NacosConsumer) (*Provider, error) {
+func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string) (*NacosProvider, error) {
 	provider := &NacosProvider{}
 	provider.registerFunc = foo
 	provider.clientConfig = nc.clientConfig
@@ -169,7 +169,12 @@ func CreateNacosProviderWithConsumer(foo GrpcRegisterFunc, ServiceName string, s
 	provider.groupName = nc.groupName
 	provider.ip = serviceIp      //"127.0.0.1"
 	provider.metadata = metadata //&map[string]string{"idc": "shanghai"}
-	return CreateProvider(provider, defaultCircuitConfig, nil)
+	p, err := CreateProvider(provider, defaultCircuitConfig, nil)
+	provider.provider = p
+	return provider, err
+}
+func (np *NacosProvider) GetBaseProvider() *Provider {
+	return np.provider
 }
 
 func (np *NacosProvider) GetServiceName() (serviceName string) {
@@ -284,6 +289,9 @@ func (nc *NacosConsumer) GetServiceName() (serviceName string, err error) {
 	serviceName = nc.serviceName
 	return
 }
+func (nc *NacosConsumer) GetBaseConsumer() *Consumer {
+	return nc.consumer
+}
 
 func (nc *NacosConsumer) Stop() (err error) {
 	//取消订阅
@@ -306,7 +314,7 @@ func (nc *NacosConsumer) Stop() (err error) {
 				//等待一个安全时间后关闭连接
 				if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" && conn.GetState().String() == "TRANSIENT_FAILURE" {
 					//正常状态的链接需要关闭，等待一个服务失效时间
-					time.Sleep(nc.base.requestTimeoutSecond)
+					time.Sleep(nc.consumer.requestTimeoutSecond)
 					err = v.GetConn().Close()
 				}
 			}()
@@ -350,7 +358,7 @@ func (nc *NacosConsumer) closeAndRemoveConn(host string) (err error) {
 			//等待一个安全时间后关闭连接
 			if conn.GetState().String() != "SHUTDOWN" && conn.GetState().String() != "Invalid-State" && conn.GetState().String() == "TRANSIENT_FAILURE" {
 				//正常状态的链接需要关闭，等待一个服务失效时间
-				time.Sleep(nc.base.requestTimeoutSecond)
+				time.Sleep(nc.consumer.requestTimeoutSecond)
 				err = conn.Close()
 				if err != nil {
 					fmt.Println(err)

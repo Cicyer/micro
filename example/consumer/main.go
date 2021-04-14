@@ -42,7 +42,7 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-	micro.AddConsumer(consumer)
+	micro.AddConsumer(consumer.GetBaseConsumer())
 	//
 	//conn, err := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
 	//if err != nil {
@@ -88,7 +88,7 @@ func main() {
 			fmt.Println(conn.Target())
 			orderService3Client := TestService.NewOrderServiceClient(conn)
 			orderRequest3 := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
-			ctx3, _ := consumer.GetNewTimeoutContext()
+			ctx3, _ := consumer.GetBaseConsumer().GetNewTimeoutContext()
 			orderInfo2, err := orderService3Client.GetOrderInfo(ctx3, orderRequest3)
 			if err == nil {
 				fmt.Println(orderInfo2.GetOrderId())
@@ -109,7 +109,7 @@ func main() {
 		fmt.Println(conn.Target())
 		orderService3Client := TestService.NewOrderServiceClient(conn)
 		orderRequest3 := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
-		ctx3, _ := consumer.GetNewTimeoutContext()
+		ctx3, _ := consumer.GetBaseConsumer().GetNewTimeoutContext()
 		orderInfo2, err := orderService3Client.GetOrderInfo(ctx3, orderRequest3)
 		if err == nil {
 			fmt.Println(orderInfo2.GetOrderId())
