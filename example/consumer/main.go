@@ -38,7 +38,10 @@ func main() {
 	//if err != nil {
 	//	panic(err.Error())
 	//}
-	consumer, err := micro.CreateNacosConsumer(&clientConfig, &serverConfigs, "TestService", "cluster-default", "group-default", 30)
+	consumer, err := micro.CreateNacosConsumer(&clientConfig, &serverConfigs, "TestService", "cluster-default", "group-default", 1)
+	if err != nil {
+		panic(err.Error())
+	}
 	micro.AddConsumer(consumer)
 	//
 	//conn, err := grpc.Dial(instance.Ip+":"+strconv.FormatUint(instance.Port, 10), grpc.WithInsecure())
@@ -47,34 +50,55 @@ func main() {
 	//}
 	//defer conn.Close()
 	defer micro.Stop()
-	conn, err := micro.GetServiceConn("TestService")
-	orderServiceClient := TestService.NewOrderServiceClient(conn)
-	orderRequest := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
-	ctx1, cel := consumer.GetNewTimeoutContext()
-	defer cel()
-	orderInfo, err := orderServiceClient.GetOrderInfo(ctx1, orderRequest)
-	if err == nil {
-		fmt.Println(orderInfo.GetOrderId())
-		fmt.Println(orderInfo.GetOrderName())
-		fmt.Println(orderInfo.GetOrderStatus())
-	} else {
-		fmt.Println(err)
-	}
+	//conn, err := micro.GetServiceConn("TestService")
+	//orderServiceClient := TestService.NewOrderServiceClient(conn)
+	//orderRequest := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
+	//ctx1, cel := consumer.GetNewTimeoutContext()
+	//defer cel()
+	//orderInfo, err := orderServiceClient.GetOrderInfo(ctx1, orderRequest)
+	//if err == nil {
+	//	fmt.Println(orderInfo.GetOrderId())
+	//	fmt.Println(orderInfo.GetOrderName())
+	//	fmt.Println(orderInfo.GetOrderStatus())
+	//} else {
+	//	fmt.Println(err)
+	//}
 	//复用测试
-	orderService2Client := TestService.NewOrder2ServiceClient(conn)
-	orderRequest2 := &TestService.OrderRequest2{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
-	ctx2, cel2 := consumer.GetNewTimeoutContext()
-	defer cel2()
-	orderInfo2, err := orderService2Client.GetOrderInfo(ctx2, orderRequest2)
-	if err == nil {
-		fmt.Println(orderInfo2.GetOrderId())
-		fmt.Println(orderInfo2.GetOrderName())
-		fmt.Println(orderInfo2.GetOrderStatus())
-	} else {
-		fmt.Println(err)
-	}
-
-	//测试关闭
+	//orderService2Client := TestService.NewOrder2ServiceClient(conn)
+	//orderRequest2 := &TestService.OrderRequest2{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
+	//ctx2, cel2 := consumer.GetNewTimeoutContext()
+	//defer cel2()
+	//orderInfo2, err := orderService2Client.GetOrderInfo(ctx2, orderRequest2)
+	//if err == nil {
+	//	fmt.Println(orderInfo2.GetOrderId())
+	//	fmt.Println(orderInfo2.GetOrderName())
+	//	fmt.Println(orderInfo2.GetOrderStatus())
+	//} else {
+	//	fmt.Println(err)
+	//}
+	//循环测试
+	go func() {
+		for true {
+			time.Sleep(time.Duration(1) * time.Second)
+			conn, err := micro.GetServiceConn("TestService")
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			fmt.Println(conn.Target())
+			orderService3Client := TestService.NewOrderServiceClient(conn)
+			orderRequest3 := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
+			ctx3, _ := consumer.GetNewTimeoutContext()
+			orderInfo2, err := orderService3Client.GetOrderInfo(ctx3, orderRequest3)
+			if err == nil {
+				fmt.Println(orderInfo2.GetOrderId())
+				fmt.Println(orderInfo2.GetOrderName())
+				fmt.Println(orderInfo2.GetOrderStatus())
+			} else {
+				fmt.Println(err)
+			}
+		}
+	}()
 	for true {
 		time.Sleep(time.Duration(1) * time.Second)
 		conn, err := micro.GetServiceConn("TestService")
@@ -83,8 +107,8 @@ func main() {
 			continue
 		}
 		fmt.Println(conn.Target())
-		orderService3Client := TestService.NewOrder2ServiceClient(conn)
-		orderRequest3 := &TestService.OrderRequest2{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
+		orderService3Client := TestService.NewOrderServiceClient(conn)
+		orderRequest3 := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
 		ctx3, _ := consumer.GetNewTimeoutContext()
 		orderInfo2, err := orderService3Client.GetOrderInfo(ctx3, orderRequest3)
 		if err == nil {
@@ -95,4 +119,23 @@ func main() {
 			fmt.Println(err)
 		}
 	}
+	//单例
+	//{
+	//	conn, err := micro.GetServiceConn("TestService")
+	//	if err != nil {
+	//		fmt.Println(err)
+	//	}
+	//	fmt.Println(conn.Target())
+	//	orderService3Client := TestService.NewOrderServiceClient(conn)
+	//	orderRequest3 := &TestService.OrderRequest{OrderId: "201907300001", TimeStamp: time.Now().Unix()}
+	//	ctx3, _ := consumer.GetNewTimeoutContext()
+	//	orderInfo2, err := orderService3Client.GetOrderInfo(ctx3, orderRequest3)
+	//	if err == nil {
+	//		fmt.Println(orderInfo2.GetOrderId())
+	//		fmt.Println(orderInfo2.GetOrderName())
+	//		fmt.Println(orderInfo2.GetOrderStatus())
+	//	} else {
+	//		fmt.Println(err)
+	//	}
+	//}
 }

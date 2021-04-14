@@ -24,7 +24,7 @@ func (c *OrderServiceImpl) GetOrderInfo(ctx context.Context, request *TestServic
 		"201907310001": TestService.OrderInfo{OrderId: "201907310001", OrderName: "零食", OrderStatus: "已付款"},
 		"201907310002": TestService.OrderInfo{OrderId: "201907310002", OrderName: "食品", OrderStatus: "未付款"},
 	}
-
+	time.Sleep(time.Second * 2)
 	var response *TestService.OrderInfo
 	current := time.Now().Unix()
 	if request.TimeStamp > current {
@@ -112,7 +112,15 @@ func main() {
 	//	panic(err.Error())
 	//}
 	//
-	provider, err := micro.CreateNacosProvider(RegisterTestService, &clientConfig, &serverConfigs, "TestService", "127.0.0.1", "cluster-default", "group-default", &map[string]string{"idc": "shanghai"})
+	//provider, err := micro.CreateNacosProvider(RegisterTestService, &clientConfig, &serverConfigs, "TestService", "127.0.0.1", "cluster-default", "group-default", &map[string]string{"idc": "shanghai"})
+	provider, err := micro.CreateNacosCircuitProvider(RegisterTestService, &clientConfig, &serverConfigs, "TestService", "127.0.0.1", "cluster-default", "group-default", &map[string]string{"idc": "shanghai"},
+		micro.CircuitConfig{
+			TimeoutThresholdRate: 0.5,
+			TimeoutDuration:      time.Second * 1,
+			RetryDuration:        time.Second * 10,
+			CircuitDuration:      time.Second * 15,
+			CircuitBaseCount:     5,
+		})
 	if err != nil {
 		panic(err.Error())
 	}
