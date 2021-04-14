@@ -141,7 +141,7 @@ func CreateNacosConsumer(clientConfig *constant.ClientConfig, serverConfigs *[]c
 }
 
 //使用provider的namingClient构建consumer
-func (np *NacosProvider) CreateNacosConsumer(ServiceName string, timeoutSeconds int) *Consumer {
+func CreateNacosConsumerWithProvider(ServiceName string, timeoutSeconds int, np *NacosProvider) *Consumer {
 	consumer := &NacosConsumer{}
 	consumer.clientConfig = np.clientConfig
 	consumer.serverConfigs = np.serverConfigs
@@ -158,7 +158,7 @@ func (np *NacosProvider) CreateNacosConsumer(ServiceName string, timeoutSeconds 
 }
 
 //使用consumer的namingClient构建provider
-func (nc *NacosConsumer) CreateNacosProvider(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string) (*Provider, error) {
+func CreateNacosProviderWithConsumer(foo GrpcRegisterFunc, ServiceName string, serviceIp string, metadata *map[string]string, nc *NacosConsumer) (*Provider, error) {
 	provider := &NacosProvider{}
 	provider.registerFunc = foo
 	provider.clientConfig = nc.clientConfig
