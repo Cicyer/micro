@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -83,13 +84,15 @@ func (c *CircuitController) Limit() bool {
 	current := time.Now()
 	if current.After(c.circuitEnd) {
 		//已经不在熔断周期内,添加计数
-		c.AddReq(1)
+		reqCount := c.AddReq(1)
+		fmt.Println("reqCount invoke:" + strconv.FormatInt(reqCount, 10))
 		return false
 	} else {
 		//处于熔断时间，判断是否重试
 		if current.After(c.retryStart) {
 			//可以重试但是不需要增加计数，如果此时还是失败，则直接延长熔断时间
-			c.AddReq(1)
+			reqCount := c.AddReq(1)
+			fmt.Println("reqCount retryStart:" + strconv.FormatInt(reqCount, 10))
 			return false
 		}
 	}
@@ -107,13 +110,14 @@ func CircuitBreakerIncr(circuitController *CircuitController) grpc_zap.Option {
 				time.Sleep(circuitController.CircuitConfig.CircuitDuration)
 				reqCount := circuitController.AddReq(-1)
 				timeoutCount := circuitController.AddTimeout(-1)
-				fmt.Println(reqCount)
-				fmt.Println(timeoutCount)
+				fmt.Println("reqCount timeout_return:" + strconv.FormatInt(reqCount, 10))
+				fmt.Println("timeoutCount timeout_return:" + strconv.FormatInt(timeoutCount, 10))
 			}()
 		} else {
 			//正常请求
 			reqCount := circuitController.AddReq(-1)
 			fmt.Println(reqCount)
+			fmt.Println("reqCount normal_return:" + strconv.FormatInt(reqCount, 10))
 		}
 		return zap.Float32("grpc.time_ms", float32(duration.Nanoseconds()/1000)/1000)
 	})
