@@ -116,7 +116,6 @@ func CircuitBreakerIncr(circuitController *CircuitController) grpc_zap.Option {
 		} else {
 			//正常请求
 			reqCount := circuitController.AddReq(-1)
-			fmt.Println(reqCount)
 			fmt.Println("reqCount normal_return:" + strconv.FormatInt(reqCount, 10))
 		}
 		return zap.Float32("grpc.time_ms", float32(duration.Nanoseconds()/1000)/1000)

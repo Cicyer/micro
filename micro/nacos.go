@@ -382,7 +382,7 @@ func (nc *NacosConsumer) addNewConn(ip string, port string) (conn *ServiceConnec
 		} else if v.GetConn() == nil && emptyIndex == -1 && v.processBtn == 0 {
 			//只存第一个空位
 			emptyIndex = i
-			fmt.Println("set " + strconv.Itoa(i))
+			//fmt.Println("set " + strconv.Itoa(i))
 		}
 	}
 	//不存在的进行新增
