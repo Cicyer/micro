@@ -11,10 +11,12 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
 	"net"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -185,6 +187,21 @@ func CreateConsumer(iConsumer IConsumer) (*Consumer, error) {
 	return &consumer, nil
 }
 
+func RecoveryInterceptor() grpc_recovery.Option {
+	return grpc_recovery.WithRecoveryHandler(func(p interface{}) (err error) {
+		switch p.(type) {
+		case runtime.Error:
+			// 运行时错误
+			err = p.(error)
+			fmt.Println(string(debug.Stack()))
+			return err
+		default:
+			// 非运行时错误
+		}
+		return grpc.Errorf(codes.Unknown, "panic triggered: %v", p)
+	})
+}
+
 //在指定端口监听微服务，并将端口注册给注册中心
 func StartProvide(provider *Provider, port string) (err error) {
 	if listener == nil {
@@ -205,12 +222,12 @@ func StartProvide(provider *Provider, port string) (err error) {
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
 			ratelimit.UnaryServerInterceptor(provider.GetCircuitController()),
 			grpc_zap.UnaryServerInterceptor(provider.Logger, CircuitBreakerIncr(provider.GetCircuitController())),
-			grpc_recovery.UnaryServerInterceptor(),
+			grpc_recovery.UnaryServerInterceptor(RecoveryInterceptor()),
 		)),
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
 			ratelimit.StreamServerInterceptor(provider.GetCircuitController()),
 			grpc_zap.StreamServerInterceptor(provider.Logger, CircuitBreakerIncr(provider.GetCircuitController())),
-			grpc_recovery.StreamServerInterceptor(),
+			grpc_recovery.StreamServerInterceptor(RecoveryInterceptor()),
 		)),
 	)
 	//将该端口注册到注册中心，包含的服务由provider自行确定
