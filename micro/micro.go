@@ -104,21 +104,24 @@ func (c *CircuitController) Limit() bool {
 //超时计数器
 func CircuitBreakerIncr(circuitController *CircuitController) grpc_zap.Option {
 	return grpc_zap.WithDurationField(func(duration time.Duration) zapcore.Field {
-		if duration > circuitController.CircuitConfig.TimeoutDuration {
-			//超时了
-			circuitController.AddTimeout(1)
-			go func() {
-				//熔断判断周期内保理此次超时记录
-				time.Sleep(circuitController.CircuitConfig.CircuitDuration)
+		if circuitController.CircuitConfig.TimeoutThresholdRate > 0 {
+			//不限制失败熔断,无需统计请求次数
+			if duration > circuitController.CircuitConfig.TimeoutDuration {
+				//超时了
+				circuitController.AddTimeout(1)
+				go func() {
+					//熔断判断周期内保理此次超时记录
+					time.Sleep(circuitController.CircuitConfig.CircuitDuration)
+					reqCount := circuitController.AddReq(-1)
+					timeoutCount := circuitController.AddTimeout(-1)
+					fmt.Println("reqCount timeout_return:" + strconv.FormatInt(reqCount, 10))
+					fmt.Println("timeoutCount timeout_return:" + strconv.FormatInt(timeoutCount, 10))
+				}()
+			} else {
+				//正常请求
 				reqCount := circuitController.AddReq(-1)
-				timeoutCount := circuitController.AddTimeout(-1)
-				fmt.Println("reqCount timeout_return:" + strconv.FormatInt(reqCount, 10))
-				fmt.Println("timeoutCount timeout_return:" + strconv.FormatInt(timeoutCount, 10))
-			}()
-		} else {
-			//正常请求
-			reqCount := circuitController.AddReq(-1)
-			fmt.Println("reqCount normal_return:" + strconv.FormatInt(reqCount, 10))
+				fmt.Println("reqCount normal_return:" + strconv.FormatInt(reqCount, 10))
+			}
 		}
 		return zap.Float32("grpc.time_ms", float32(duration.Nanoseconds()/1000)/1000)
 	})
