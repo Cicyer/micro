@@ -63,6 +63,7 @@ type NacosConsumer struct {
 	namingClient   *naming_client.INamingClient
 	serviceName    string
 	connList       [5]*ServiceConnection
+	connCount      int64
 	clusterName    string
 	groupName      string
 	subscribed     bool
@@ -222,7 +223,9 @@ func (np *NacosProvider) DeregisterServices() (err error) {
 func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err error) {
 	//链接状态异常，申请备用链接，如果备用链接全部不可用，则返回异常
 	//先寻找备用线路是否有可用的
-	for _, v := range nc.connList {
+	startIdx := atomic.AddInt64(&nc.connCount, 1)
+	for _, _ = range nc.connList {
+		v := nc.connList[startIdx%int64(len(nc.connList))]
 		if v.GetConn() != nil {
 			fmt.Println(v.GetConn().GetState())
 		}
@@ -233,10 +236,19 @@ func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err erro
 			//释放已经失效的链接
 			go nc.closeAndRemoveConn(v.GetConn().Target())
 		}
+		startIdx += 1
+	}
+	if startIdx > 999999999 {
+		nc.connCount = 0
 	}
 	if conn == nil {
 		//没有找到可用链接，直接创建新的
-		instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
+		//instance, err1 := (*nc.namingClient).SelectOneHealthyInstance(vo.SelectOneHealthInstanceParam{
+		//	ServiceName: nc.serviceName,
+		//	GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
+		//	Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
+		//})
+		instances, err1 := (*nc.namingClient).SelectAllInstances(vo.SelectAllInstancesParam{
 			ServiceName: nc.serviceName,
 			GroupName:   nc.groupName,             // 默认值DEFAULT_GROUP
 			Clusters:    []string{nc.clusterName}, // 默认值DEFAULT
@@ -245,10 +257,19 @@ func (nc *NacosConsumer) GetServiceConnection() (conn *grpc.ClientConn, err erro
 			err = err1
 			return
 		}
-		co, err1 := nc.addNewConn(instance.Ip, strconv.FormatUint(instance.Port, 10))
-		if err1 != nil {
-			err = err1
-			return
+		//co, err1 := nc.addNewConn(instance.Ip, strconv.FormatUint(instance.Port, 10))
+		//if err1 != nil {
+		//	err = err1
+		//	return
+		//}
+		//conn = c o.GetConn()
+		var co *ServiceConnection
+		for _, v := range instances {
+			co, err1 = nc.addNewConn(v.Ip, strconv.FormatUint(v.Port, 10))
+			if err1 != nil {
+				err = err1
+				return
+			}
 		}
 		conn = co.GetConn()
 	}
